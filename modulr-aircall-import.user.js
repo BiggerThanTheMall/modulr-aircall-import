@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modulr - Import Aircall
 // @namespace    https://github.com/BiggerThanTheMall
-// @version      0.2.1
+// @version      0.2.2
 // @description  Recherche un appel Aircall depuis la fiche client Modulr puis crée une note normalisée.
 // @match        https://courtage.modulr.fr/*
 // @grant        none
@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.2.1';
+  const VERSION = '0.2.2';
   const API_ROOT = 'https://aircallmodulr.netlify.app';
   const BTN_ID = 'modulr-aircall-import-btn';
   const MODAL_ID = 'modulr-aircall-modal';
@@ -200,14 +200,42 @@
     }
   }
 
+  function findEventsToolbar() {
+    const eventTitle = [...document.querySelectorAll('h1,h2,h3,h4,h5,strong,span,div')]
+      .find(el => el.offsetParent !== null && /^Événements$/i.test((el.textContent || '').trim()));
+    if (!eventTitle) return null;
+
+    let box = eventTitle.parentElement;
+    for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
+      const plus = [...box.querySelectorAll('button,a')].find(el => {
+        const text = (el.textContent || '').trim();
+        return text === '+' || /add|plus|ajout/i.test(`${el.id || ''} ${el.className || ''} ${el.title || ''}`);
+      });
+      if (plus?.parentElement) return plus.parentElement;
+    }
+    return eventTitle.parentElement;
+  }
+
   function injectButton() {
     if (document.getElementById(BTN_ID) || !getClientId()) return;
-    const anchor = document.querySelector('a.task_manage[id*="entity_name:Client:entity_id:"]') || document.querySelector('.vcard_name');
-    if (!anchor?.parentElement) return;
+    const toolbar = findEventsToolbar();
+    if (!toolbar) return;
+
     const button = document.createElement('button');
-    button.id = BTN_ID; button.type = 'button'; button.textContent = 'Récupérer un appel Aircall'; button.title = `Modulr Aircall Import v${VERSION}`;
-    button.style.cssText = 'margin:8px 6px;padding:7px 11px;border:1px solid #b9c4cf;border-radius:4px;background:#f6f8fa;color:#334155;font-weight:600;cursor:pointer';
-    button.onclick = () => run(button); anchor.parentElement.appendChild(button);
+    button.id = BTN_ID;
+    button.type = 'button';
+    button.title = `Récupérer un appel Aircall · v${VERSION}`;
+    button.setAttribute('aria-label', 'Récupérer un appel Aircall');
+    button.textContent = '☎';
+    button.style.cssText = 'width:36px;height:36px;margin:0 4px;border:0;border-radius:3px;background:#5f86a1;color:#fff;font-size:19px;font-weight:700;line-height:36px;text-align:center;cursor:pointer;vertical-align:middle';
+    button.onclick = () => run(button);
+
+    const plus = [...toolbar.querySelectorAll('button,a')].find(el => {
+      const text = (el.textContent || '').trim();
+      return text === '+' || /add|plus|ajout/i.test(`${el.id || ''} ${el.className || ''} ${el.title || ''}`);
+    });
+    if (plus) toolbar.insertBefore(button, plus);
+    else toolbar.appendChild(button);
   }
 
   new MutationObserver(injectButton).observe(document.documentElement, { childList: true, subtree: true });
