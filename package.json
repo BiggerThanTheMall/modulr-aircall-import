@@ -1,12 +1,9 @@
 {
   "name": "modulr-aircall-import",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
   "dependencies": {
-    "express": "^5.1.0"
+    "@netlify/functions": "^4.2.5"
   }
 }
