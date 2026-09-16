@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modulr - Import Aircall
 // @namespace    https://github.com/BiggerThanTheMall
-// @version      1.1.0
+// @version      1.2.0
 // @description  Recherche un appel Aircall depuis la fiche client Modulr puis crée un événement d'appel normalisé.
 // @match        https://courtage.modulr.fr/*
 // @grant        none
@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const API_ROOT = 'https://aircallmodulr.netlify.app';
   const BTN_ID = 'modulr-aircall-import-btn';
   const MODAL_ID = 'modulr-aircall-modal';
@@ -135,6 +135,80 @@
     return overlay;
   }
 
+  function phoneSourcePicker(pagePhones) {
+    return new Promise(resolve => {
+      const detected = [...new Set(pagePhones || [])];
+      const phoneRows = detected.length
+        ? detected.map(phone => `
+          <label style="display:flex;align-items:center;gap:9px;padding:9px 10px;border:1px solid #e2e8f0;border-radius:7px;background:#fff;margin-bottom:7px;cursor:pointer">
+            <input type="checkbox" data-page-phone value="${esc(phone)}" checked style="width:16px;height:16px">
+            <span style="font-weight:600;color:#334155">${esc(phone)}</span>
+          </label>`).join('')
+        : '<div style="padding:10px 12px;border:1px dashed #cbd5e1;border-radius:7px;color:#94a3b8">Aucun numéro détecté sur cette fiche.</div>';
+
+      const modal = createModal('Choisir le numéro de l’appel', `
+        <div style="margin-bottom:14px;color:#64748b">L’événement sera enregistré sur <strong style="color:#334155">${esc(getClientName())}</strong>. Choisissez quel numéro Aircall rechercher.</div>
+        <label style="display:block;border:1px solid #dbe2ea;border-radius:9px;padding:14px;margin-bottom:12px;background:#f8fafc;cursor:${detected.length ? 'pointer' : 'default'}">
+          <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+            <input type="radio" name="aircall-phone-source" value="page" ${detected.length ? 'checked' : 'disabled'}>
+            <strong>Numéro(s) de la fiche client</strong>
+          </div>
+          <div style="padding-left:25px">${phoneRows}</div>
+        </label>
+        <label style="display:block;border:1px solid #dbe2ea;border-radius:9px;padding:14px;background:#fff;cursor:pointer">
+          <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+            <input type="radio" name="aircall-phone-source" value="manual" ${detected.length ? '' : 'checked'}>
+            <strong>Saisir un autre numéro</strong>
+          </div>
+          <div style="padding-left:25px">
+            <input id="aircall-manual-phone" type="tel" inputmode="tel" placeholder="Ex. 06 12 34 56 78 ou +33 6 12 34 56 78" style="width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px">
+            <div style="font-size:12px;color:#64748b;margin-top:6px">Banquier, avocat, compagnie, prestataire, pompe funèbre, etc.</div>
+          </div>
+        </label>
+        <div id="aircall-phone-error" style="display:none;margin-top:10px;padding:9px 11px;border-radius:6px;background:#fef2f2;color:#b91c1c;font-size:12px"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:18px">
+          <button id="aircall-phone-next" type="button" style="padding:9px 16px;border:0;border-radius:6px;background:#4f7892;color:#fff;font-weight:700;cursor:pointer">Continuer</button>
+        </div>`);
+
+      const manualInput = modal.querySelector('#aircall-manual-phone');
+      manualInput?.addEventListener('focus', () => {
+        const radio = modal.querySelector('input[name="aircall-phone-source"][value="manual"]');
+        if (radio) radio.checked = true;
+      });
+      modal.querySelectorAll('[data-page-phone]').forEach(input => {
+        input.addEventListener('change', () => {
+          const radio = modal.querySelector('input[name="aircall-phone-source"][value="page"]');
+          if (radio && !radio.disabled) radio.checked = true;
+        });
+      });
+      modal.querySelector('#aircall-phone-next').onclick = () => {
+        const source = modal.querySelector('input[name="aircall-phone-source"]:checked')?.value;
+        const error = modal.querySelector('#aircall-phone-error');
+        let phones = [];
+        if (source === 'page') {
+          phones = [...modal.querySelectorAll('[data-page-phone]:checked')].map(input => normalizePhone(input.value)).filter(Boolean);
+          if (!phones.length) {
+            error.textContent = 'Sélectionnez au moins un numéro de la fiche.';
+            error.style.display = 'block';
+            return;
+          }
+        } else {
+          const phone = normalizePhone(manualInput?.value || '');
+          const digits = phone.replace(/\D/g, '');
+          if (digits.length < 8 || digits.length > 15) {
+            error.textContent = 'Saisissez un numéro de téléphone valide (8 à 15 chiffres).';
+            error.style.display = 'block';
+            manualInput?.focus();
+            return;
+          }
+          phones = [phone];
+        }
+        modal.remove();
+        resolve([...new Set(phones)].slice(0, 10));
+      };
+    });
+  }
+
   function collaboratorPicker(phones) {
     return new Promise(resolve => {
       const current = detectCurrentCollaborator();
@@ -174,7 +248,7 @@
           </div>
           <div style="margin-top:7px;color:#64748b">${esc(call.raw_digits || 'Numéro inconnu')} · ${esc(formatDuration(call.duration))}</div>
         </button>`).join('');
-      const modal = createModal(`Appels de ${collaborator.modulr}`, `<div style="margin-bottom:12px;color:#64748b">${calls.length} appel${calls.length > 1 ? 's' : ''} correspondant aux numéros de la fiche sur les ${HOURS} dernières heures.</div>${rows}`);
+      const modal = createModal(`Appels de ${collaborator.modulr}`, `<div style="margin-bottom:12px;color:#64748b">${calls.length} appel${calls.length > 1 ? 's' : ''} correspondant au(x) numéro(s) sélectionné(s) sur les ${HOURS} dernières heures.</div>${rows}`);
       modal.querySelectorAll('[data-call]').forEach(button => {
         button.onclick = () => {
           const selected = calls[Number(button.dataset.call)];
@@ -240,46 +314,17 @@
   async function createModulrNote(clientId, note) {
     const body = new URLSearchParams();
     const values = {
-      mcut: '',
-      action: 'send',
-      mode: 'create',
-      entity_id: String(clientId),
-      class_name: 'Client',
-      'task[task_id]': '',
-      create_tour: '0',
-      task_mode: 'simple_event',
-      add_following_task: '',
-      selectItemadd_following_task: '',
-      // Important : on laisse le nom vide comme une note/événement ModulR native.
-      // Le titre visible est la première ligne de task[notes], ce qui conserve "Voir plus".
-      'task[name]': '',
-      'task[recall_date]': '',
-      'task[recall_hour]': '',
-      task_actors_list_id: '0',
-      selectItemtask_actors_list_id: '0',
-      selectGrouptask_actors_list_id: '',
-      'task[event_type]': note.eventType,
-      'selectItemtask[event_type]': note.eventType,
-      model_message: '0',
-      selectItemmodel_message: '0',
-      message_template_type: 'event',
-      task_related_to_entity: '0',
-      selectItemtask_related_to_entity: '0',
-      'task[call_id]': String(note.call.id || ''),
-      'task[call_qualification]': '',
-      'selectItemtask[call_qualification]': '',
-      'task[notes]': note.body
+      mcut: '', action: 'send', mode: 'create', entity_id: String(clientId), class_name: 'Client',
+      'task[task_id]': '', create_tour: '0', task_mode: 'simple_event', add_following_task: '', selectItemadd_following_task: '',
+      'task[name]': '', 'task[recall_date]': '', 'task[recall_hour]': '', task_actors_list_id: '0', selectItemtask_actors_list_id: '0',
+      selectGrouptask_actors_list_id: '', 'task[event_type]': note.eventType, 'selectItemtask[event_type]': note.eventType,
+      model_message: '0', selectItemmodel_message: '0', message_template_type: 'event', task_related_to_entity: '0', selectItemtask_related_to_entity: '0',
+      'task[call_id]': String(note.call.id || ''), 'task[call_qualification]': '', 'selectItemtask[call_qualification]': '', 'task[notes]': note.body
     };
     for (const [key, value] of Object.entries(values)) body.append(key, value);
-
     const response = await fetch('/fr/scripts/Tasks/TasksManage.php', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'X-Requested-With': 'XMLHttpRequest',
-        Accept: 'application/json, text/javascript, */*; q=0.01'
-      },
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json, text/javascript, */*; q=0.01' },
       body: body.toString()
     });
     if (!response.ok) throw new Error(`ModulR HTTP ${response.status}`);
@@ -306,7 +351,6 @@
       </div>
       <details style="margin-top:12px"><summary style="cursor:pointer;color:#64748b">Voir le texte exact enregistré dans ModulR</summary><pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;font-family:Arial,sans-serif;line-height:1.45">${esc(note.body)}</pre></details>
       <div style="display:flex;justify-content:flex-end;margin-top:16px"><button type="button" id="aircall-import-confirm" style="padding:9px 16px;border:0;border-radius:6px;background:#4f7892;color:#fff;font-weight:700;cursor:pointer">Créer l’événement dans ModulR</button></div>`);
-
     modal.querySelector('#aircall-import-confirm').onclick = async event => {
       const button = event.currentTarget;
       button.disabled = true;
@@ -327,9 +371,9 @@
   async function run(button) {
     const clientId = getClientId();
     if (!clientId) return alert('Impossible d’identifier la fiche client ModulR.');
-    const phones = getPhonesOnPage();
-    if (!phones.length) return alert('Aucun numéro de téléphone exploitable trouvé sur cette fiche.');
-
+    const pagePhones = getPhonesOnPage();
+    const phones = await phoneSourcePicker(pagePhones);
+    if (!phones?.length) return;
     const collaborator = await collaboratorPicker(phones);
     if (!collaborator) return;
 
@@ -341,9 +385,8 @@
       const allCalls = Array.isArray(result.calls) ? result.calls : [];
       const wanted = normalizeName(collaborator.aircall);
       const calls = allCalls.filter(call => normalizeName(call.user?.name) === wanted);
-
       if (!calls.length) {
-        alert(`Aucun appel Aircall de ${collaborator.modulr} trouvé sur les ${HOURS} dernières heures pour les numéros de cette fiche.`);
+        alert(`Aucun appel Aircall de ${collaborator.modulr} trouvé sur les ${HOURS} dernières heures pour le(s) numéro(s) sélectionné(s).`);
         return;
       }
       const selected = calls.length === 1 ? calls[0] : await chooseCall(calls, collaborator);
