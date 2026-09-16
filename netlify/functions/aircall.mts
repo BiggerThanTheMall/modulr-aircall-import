@@ -197,7 +197,6 @@ export default async (req: Request, context: Context) => {
 
 export const config: Config = {
   path: ["/api/calls", "/api/calls/:id"],
-  method: ["GET", "OPTIONS"],
   rateLimit: {
     windowLimit: 20,
     windowSize: 60,
