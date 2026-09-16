@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Modulr - Import Aircall
 // @namespace    https://github.com/BiggerThanTheMall
-// @version      1.0.0
-// @description  Recherche un appel Aircall depuis la fiche client Modulr puis crée une note normalisée.
+// @version      1.1.0
+// @description  Recherche un appel Aircall depuis la fiche client Modulr puis crée un événement d'appel normalisé.
 // @match        https://courtage.modulr.fr/*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/BiggerThanTheMall/modulr-aircall-import/main/modulr-aircall-import.user.js
@@ -12,10 +12,22 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const API_ROOT = 'https://aircallmodulr.netlify.app';
   const BTN_ID = 'modulr-aircall-import-btn';
   const MODAL_ID = 'modulr-aircall-modal';
+  const HOURS = 48;
+
+  const COLLABORATORS = [
+    { modulr: 'Ghais Kalah', aircall: 'Ghais Kalah' },
+    { modulr: 'Jake CASIMIR', aircall: 'Jake CASIMIR' },
+    { modulr: 'Eddy KALAH', aircall: 'Eddy Kalah' },
+    { modulr: 'Nadia KALAH', aircall: 'Nadia Kalah' },
+    { modulr: 'Sheana KRIEF', aircall: 'Sheana KRIEF' },
+    { modulr: 'Doryan KALAH', aircall: 'Doryan Kalah' },
+    { modulr: 'Youness OUACHBAB', aircall: 'Youness OUACHBAB' },
+    { modulr: 'Louli VULLIOD-PIN', aircall: 'Louli VULLIOD' }
+  ];
 
   const esc = value => String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -23,19 +35,37 @@
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+  const normalizeName = value => String(value || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
   function getClientId() {
     const url = new URL(location.href);
     const direct = url.searchParams.get('id') || url.searchParams.get('client_id') || url.searchParams.get('entity_id');
     if (direct && /^\d+$/.test(direct)) return direct;
-    const taskLink = [...document.querySelectorAll('a.task_manage[id*="entity_name:Client:entity_id:"]')]
-      .find(el => el.offsetParent !== null)
-      || document.querySelector('a.task_manage[id*="entity_name:Client:entity_id:"]');
+    const taskLink = document.querySelector('a.task_manage[id*="entity_name:Client:entity_id:"]');
     const match = String(taskLink?.id || '').match(/entity_id:(\d+)/i);
     return match ? match[1] : '';
   }
 
   function getClientName() {
     return document.querySelector('.vcard_name')?.textContent?.trim() || 'Client';
+  }
+
+  function detectCurrentCollaborator() {
+    const probes = [
+      document.querySelector('.connectedUser span.tooltip')?.getAttribute('title'),
+      document.querySelector('.connectedUser span.tooltip')?.textContent,
+      document.querySelector('.connectedUser')?.textContent,
+      document.querySelector('span.tooltip span.fa-user')?.parentElement?.getAttribute('oldtitle'),
+      document.querySelector('span.tooltip span.fa-user')?.parentElement?.textContent
+    ].filter(Boolean).map(normalizeName);
+
+    for (const collaborator of COLLABORATORS) {
+      const target = normalizeName(collaborator.modulr);
+      if (probes.some(value => value.includes(target) || target.includes(value))) return collaborator;
+    }
+    return COLLABORATORS[0];
   }
 
   function normalizePhone(value) {
@@ -49,22 +79,22 @@
       '[data-phone]', '[class*="phone" i]', '[class*="mobile" i]', '[id*="phone" i]', '[id*="mobile" i]'
     ];
     for (const node of document.querySelectorAll(selectors.join(','))) {
-      const candidates = [
-        node.getAttribute?.('href')?.replace(/^tel:/i, ''),
-        node.getAttribute?.('data-phone'), node.value, node.textContent
-      ].filter(Boolean);
-      for (const candidate of candidates) {
-        const phone = normalizePhone(candidate);
+      const values = [node.getAttribute?.('href')?.replace(/^tel:/i, ''), node.getAttribute?.('data-phone'), node.value, node.textContent].filter(Boolean);
+      for (const raw of values) {
+        const phone = normalizePhone(raw);
         const digits = phone.replace(/\D/g, '');
         if (digits.length >= 8 && digits.length <= 15) phones.add(phone);
       }
     }
-    return [...phones];
+    return [...phones].slice(0, 10);
   }
 
   async function api(path) {
     const response = await fetch(`${API_ROOT}${path}`, {
-      method: 'GET', mode: 'cors', credentials: 'omit', headers: { Accept: 'application/json' }
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      headers: { Accept: 'application/json' }
     });
     const text = await response.text();
     let body = {};
@@ -73,46 +103,92 @@
     return body;
   }
 
-  function formatDate(timestamp) {
-    return timestamp ? new Date(Number(timestamp) * 1000).toLocaleDateString('fr-FR') : '';
+  function formatDate(ts) {
+    return ts ? new Date(Number(ts) * 1000).toLocaleDateString('fr-FR') : '';
   }
-  function formatTime(timestamp) {
-    return timestamp ? new Date(Number(timestamp) * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
+  function formatTime(ts) {
+    return ts ? new Date(Number(ts) * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
   }
   function formatDuration(seconds) {
     const total = Math.max(0, Number(seconds) || 0);
-    return `${Math.floor(total / 60)} min ${String(total % 60).padStart(2, '0')} s`;
+    const minutes = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${minutes} min ${String(secs).padStart(2, '0')} s`;
   }
 
-  function createModal(title, html) {
+  function createModal(title, html, width = 820) {
     document.getElementById(MODAL_ID)?.remove();
     const overlay = document.createElement('div');
     overlay.id = MODAL_ID;
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(15,23,42,.42);display:flex;align-items:center;justify-content:center;padding:20px';
-    overlay.innerHTML = `<div style="width:min(820px,96vw);max-height:88vh;overflow:auto;background:#fff;border-radius:8px;box-shadow:0 18px 55px rgba(0,0,0,.28);font-family:Arial,sans-serif"><div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #e5e7eb"><strong style="font-size:16px;color:#334155">${esc(title)}</strong><button type="button" data-close style="border:0;background:transparent;font-size:23px;cursor:pointer;color:#64748b">×</button></div><div style="padding:16px">${html}</div></div>`;
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;padding:20px';
+    overlay.innerHTML = `
+      <div style="width:min(${width}px,96vw);max-height:90vh;overflow:auto;background:#fff;border-radius:10px;box-shadow:0 22px 70px rgba(0,0,0,.30);font-family:Arial,sans-serif;color:#334155">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid #e5e7eb;background:#f8fafc;position:sticky;top:0;z-index:2">
+          <strong style="font-size:16px">${esc(title)}</strong>
+          <button type="button" data-close style="border:0;background:transparent;font-size:24px;cursor:pointer;color:#64748b">×</button>
+        </div>
+        <div style="padding:18px">${html}</div>
+      </div>`;
     document.body.appendChild(overlay);
     overlay.querySelector('[data-close]').onclick = () => overlay.remove();
     overlay.onclick = event => { if (event.target === overlay) overlay.remove(); };
     return overlay;
   }
 
-  function chooseCall(calls) {
+  function collaboratorPicker(phones) {
     return new Promise(resolve => {
-      const rows = calls.map((call, index) => `<button type="button" data-call="${index}" style="width:100%;text-align:left;padding:12px;margin-bottom:8px;background:#fff;border:1px solid #dbe2ea;border-radius:6px;cursor:pointer"><div style="font-weight:700;color:#334155">${esc(formatDate(call.started_at))} à ${esc(formatTime(call.started_at))} — ${call.direction === 'inbound' ? 'Entrant' : 'Sortant'}</div><div style="margin-top:4px;color:#64748b">${esc(call.raw_digits || 'Numéro inconnu')} · ${esc(call.user?.name || 'Collaborateur inconnu')} · ${esc(formatDuration(call.duration))}</div></button>`).join('');
-      const modal = createModal(`Appels Aircall — ${getClientName()}`, rows);
+      const current = detectCurrentCollaborator();
+      const options = COLLABORATORS.map(c => `<option value="${esc(c.aircall)}" ${c.aircall === current.aircall ? 'selected' : ''}>${esc(c.modulr)}</option>`).join('');
+      const modal = createModal('Récupérer un appel Aircall', `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
+          <div style="padding:12px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin-bottom:4px">Client ModulR</div>
+            <strong>${esc(getClientName())}</strong>
+          </div>
+          <div style="padding:12px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin-bottom:4px">Numéro(s) recherché(s)</div>
+            <strong>${phones.map(esc).join(' · ')}</strong>
+          </div>
+        </div>
+        <label style="display:block;font-weight:700;margin-bottom:6px">Collaborateur concerné</label>
+        <select id="aircall-collaborator" style="width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #cbd5e1;border-radius:6px;background:white;font-size:14px">${options}</select>
+        <div style="font-size:12px;color:#64748b;margin-top:7px">Le collaborateur connecté est présélectionné. Vous pouvez choisir quelqu’un d’autre avant la recherche.</div>
+        <div style="display:flex;justify-content:flex-end;margin-top:18px">
+          <button id="aircall-search" type="button" style="padding:9px 16px;border:0;border-radius:6px;background:#4f7892;color:#fff;font-weight:700;cursor:pointer">Rechercher les appels</button>
+        </div>`);
+      modal.querySelector('#aircall-search').onclick = () => {
+        const value = modal.querySelector('#aircall-collaborator').value;
+        modal.remove();
+        resolve(COLLABORATORS.find(c => c.aircall === value) || current);
+      };
+    });
+  }
+
+  function chooseCall(calls, collaborator) {
+    return new Promise(resolve => {
+      const rows = calls.map((call, index) => `
+        <button type="button" data-call="${index}" style="width:100%;text-align:left;padding:13px 14px;margin-bottom:9px;background:#fff;border:1px solid #dbe2ea;border-radius:8px;cursor:pointer;transition:.15s">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+            <strong style="color:#334155">${esc(formatDate(call.started_at))} à ${esc(formatTime(call.started_at))}</strong>
+            <span style="font-size:12px;padding:3px 8px;border-radius:999px;background:${call.direction === 'inbound' ? '#e0f2fe' : '#ecfdf5'};color:#334155">${call.direction === 'inbound' ? 'Appel entrant' : 'Appel sortant'}</span>
+          </div>
+          <div style="margin-top:7px;color:#64748b">${esc(call.raw_digits || 'Numéro inconnu')} · ${esc(formatDuration(call.duration))}</div>
+        </button>`).join('');
+      const modal = createModal(`Appels de ${collaborator.modulr}`, `<div style="margin-bottom:12px;color:#64748b">${calls.length} appel${calls.length > 1 ? 's' : ''} correspondant aux numéros de la fiche sur les ${HOURS} dernières heures.</div>${rows}`);
       modal.querySelectorAll('[data-call]').forEach(button => {
         button.onclick = () => {
           const selected = calls[Number(button.dataset.call)];
-          modal.remove(); resolve(selected);
+          modal.remove();
+          resolve(selected);
         };
       });
     });
   }
 
   function extractEvaluationScore(evaluation) {
-    const evaluations = evaluation?.evaluations;
-    if (!Array.isArray(evaluations) || !evaluations.length) return '';
-    const scores = evaluations.map(item => item?.score?.normalized_score ?? item?.normalized_score ?? item?.score).filter(value => typeof value === 'number');
+    const values = evaluation?.evaluations;
+    if (!Array.isArray(values) || !values.length) return '';
+    const scores = values.map(item => item?.score?.normalized_score ?? item?.normalized_score ?? item?.score).filter(v => typeof v === 'number');
     if (!scores.length) return '';
     return `${Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)}/100`;
   }
@@ -135,76 +211,156 @@
     const ai = extractInsights(detail);
     const collaborator = call.user?.name || 'Collaborateur inconnu';
     const title = `Contact téléphonique (${formatDate(call.started_at)}) - ${collaborator}`;
-    const content = [
-      `DATE / HEURE : ${formatDate(call.started_at)} à ${formatTime(call.started_at)}`,
-      `SENS : ${call.direction === 'inbound' ? 'Appel entrant' : 'Appel sortant'}`,
-      `NUMÉRO : ${call.raw_digits || 'Non disponible'}`,
-      `DURÉE : ${formatDuration(call.duration)}`, '',
-      'RÉSUMÉ DE L’ÉCHANGE :', ai.summary || 'Analyse Aircall en cours ou non disponible.', '',
-      'QUALITÉ DE L’APPEL :', ai.quality || 'Non disponible.', '',
-      'SENTIMENT :', ai.sentiment || 'Non disponible.', '',
-      'SUJETS ABORDÉS :', ai.topics.length ? ai.topics.map(item => `- ${item}`).join('\n') : 'Non disponible.', '',
-      'ACTIONS À ENTREPRENDRE :', ai.actions.length ? ai.actions.map(item => `- ${item}`).join('\n') : 'Aucune action identifiée.'
+    const body = [
+      title,
+      '',
+      `Date / heure : ${formatDate(call.started_at)} à ${formatTime(call.started_at)}`,
+      `Sens : ${call.direction === 'inbound' ? 'Appel entrant' : 'Appel sortant'}`,
+      `Numéro : ${call.raw_digits || 'Non disponible'}`,
+      `Durée : ${formatDuration(call.duration)}`,
+      '',
+      'Résumé de l’échange',
+      ai.summary || 'Analyse Aircall en cours ou non disponible.',
+      '',
+      'Qualité de l’appel',
+      ai.quality || 'Non disponible.',
+      '',
+      'Sentiment',
+      ai.sentiment || 'Non disponible.',
+      '',
+      'Sujets abordés',
+      ai.topics.length ? ai.topics.map(item => `• ${item}`).join('\n') : 'Non disponible.',
+      '',
+      'Actions à entreprendre',
+      ai.actions.length ? ai.actions.map(item => `• ${item}`).join('\n') : 'Aucune action identifiée.'
     ].join('\n');
-    return { title, content };
+    return { title, body, eventType: call.direction === 'inbound' ? '49' : '50', call, ai };
   }
 
-  async function createModulrNote(clientId, title, notes) {
+  async function createModulrNote(clientId, note) {
     const body = new URLSearchParams();
     const values = {
-      mcut: '', action: 'send', mode: 'create', entity_id: String(clientId), class_name: 'Client', 'task[task_id]': '', create_tour: '0',
-      task_mode: 'simple_event', add_following_task: '', selectItemadd_following_task: '', 'task[name]': title, 'task[recall_date]': '', 'task[recall_hour]': '',
-      task_actors_list_id: '0', selectItemtask_actors_list_id: '0', selectGrouptask_actors_list_id: '', 'task[event_type]': '195', 'selectItemtask[event_type]': '195',
-      model_message: '0', selectItemmodel_message: '0', message_template_type: 'event', task_related_to_entity: '0', selectItemtask_related_to_entity: '0',
-      'task[call_id]': '', 'task[call_qualification]': '', 'selectItemtask[call_qualification]': '', 'task[notes]': notes
+      mcut: '',
+      action: 'send',
+      mode: 'create',
+      entity_id: String(clientId),
+      class_name: 'Client',
+      'task[task_id]': '',
+      create_tour: '0',
+      task_mode: 'simple_event',
+      add_following_task: '',
+      selectItemadd_following_task: '',
+      // Important : on laisse le nom vide comme une note/événement ModulR native.
+      // Le titre visible est la première ligne de task[notes], ce qui conserve "Voir plus".
+      'task[name]': '',
+      'task[recall_date]': '',
+      'task[recall_hour]': '',
+      task_actors_list_id: '0',
+      selectItemtask_actors_list_id: '0',
+      selectGrouptask_actors_list_id: '',
+      'task[event_type]': note.eventType,
+      'selectItemtask[event_type]': note.eventType,
+      model_message: '0',
+      selectItemmodel_message: '0',
+      message_template_type: 'event',
+      task_related_to_entity: '0',
+      selectItemtask_related_to_entity: '0',
+      'task[call_id]': String(note.call.id || ''),
+      'task[call_qualification]': '',
+      'selectItemtask[call_qualification]': '',
+      'task[notes]': note.body
     };
     for (const [key, value] of Object.entries(values)) body.append(key, value);
+
     const response = await fetch('/fr/scripts/Tasks/TasksManage.php', {
-      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json, text/javascript, */*; q=0.01' }, body: body.toString()
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        Accept: 'application/json, text/javascript, */*; q=0.01'
+      },
+      body: body.toString()
     });
-    if (!response.ok) throw new Error(`Modulr HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`ModulR HTTP ${response.status}`);
     return response.text();
+  }
+
+  function section(label, content) {
+    return `<div style="padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;background:#fff"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin-bottom:6px">${esc(label)}</div><div style="white-space:pre-wrap;line-height:1.45;color:#334155">${esc(content || 'Non disponible.')}</div></div>`;
   }
 
   async function previewAndImport(call) {
     const detail = await api(`/api/calls/${encodeURIComponent(call.id)}`);
     const note = buildNote(detail);
-    const modal = createModal('Prévisualisation de la note Aircall', `<div style="margin-bottom:12px;color:#64748b">Client Modulr #${esc(getClientId())} · appel Aircall #${esc(call.id)}</div><label style="display:block;font-weight:700;margin-bottom:5px">Titre</label><input id="aircall-note-title" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #cbd5e1;border-radius:5px;margin-bottom:12px" value="${esc(note.title)}"><label style="display:block;font-weight:700;margin-bottom:5px">Contenu</label><textarea id="aircall-note-content" style="width:100%;height:330px;box-sizing:border-box;padding:10px;border:1px solid #cbd5e1;border-radius:5px;font-family:Arial,sans-serif">${esc(note.content)}</textarea><div style="display:flex;justify-content:flex-end;margin-top:12px"><button type="button" id="aircall-import-confirm" style="padding:8px 14px;border:0;border-radius:5px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer">Importer dans Modulr</button></div>`);
+    const modal = createModal('Prévisualisation avant import', `
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px">
+        <div><div style="font-size:18px;font-weight:700;color:#1e293b">${esc(note.title)}</div><div style="margin-top:4px;color:#64748b">${esc(note.call.direction === 'inbound' ? 'Appel entrant' : 'Appel sortant')} · ${esc(formatDuration(note.call.duration))} · ${esc(note.call.raw_digits || '')}</div></div>
+        <span style="padding:5px 9px;border-radius:999px;background:#eef2f6;color:#475569;font-size:12px">Type ModulR ${note.eventType === '49' ? 'Appel entrant' : 'Appel sortant'}</span>
+      </div>
+      <div style="display:grid;gap:10px">
+        ${section('Résumé de l’échange', note.ai.summary || 'Analyse Aircall en cours ou non disponible.')}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${section('Qualité', note.ai.quality || 'Non disponible.')}${section('Sentiment', note.ai.sentiment || 'Non disponible.')}</div>
+        ${section('Sujets abordés', note.ai.topics.length ? note.ai.topics.map(v => `• ${v}`).join('\n') : 'Non disponible.')}
+        ${section('Actions à entreprendre', note.ai.actions.length ? note.ai.actions.map(v => `• ${v}`).join('\n') : 'Aucune action identifiée.')}
+      </div>
+      <details style="margin-top:12px"><summary style="cursor:pointer;color:#64748b">Voir le texte exact enregistré dans ModulR</summary><pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;font-family:Arial,sans-serif;line-height:1.45">${esc(note.body)}</pre></details>
+      <div style="display:flex;justify-content:flex-end;margin-top:16px"><button type="button" id="aircall-import-confirm" style="padding:9px 16px;border:0;border-radius:6px;background:#4f7892;color:#fff;font-weight:700;cursor:pointer">Créer l’événement dans ModulR</button></div>`);
+
     modal.querySelector('#aircall-import-confirm').onclick = async event => {
-      const button = event.currentTarget; button.disabled = true; button.textContent = 'Import...';
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = 'Création…';
       try {
-        await createModulrNote(getClientId(), modal.querySelector('#aircall-note-title').value.trim(), modal.querySelector('#aircall-note-content').value);
-        modal.remove(); alert('Note Aircall créée dans Modulr.'); location.reload();
+        await createModulrNote(getClientId(), note);
+        modal.remove();
+        alert(`${note.eventType === '49' ? 'Appel entrant' : 'Appel sortant'} créé dans ModulR.`);
+        location.reload();
       } catch (error) {
-        alert(`Erreur création note Modulr : ${error.message}`); button.disabled = false; button.textContent = 'Importer dans Modulr';
+        alert(`Erreur création événement ModulR : ${error.message}`);
+        button.disabled = false;
+        button.textContent = 'Créer l’événement dans ModulR';
       }
     };
   }
 
   async function run(button) {
     const clientId = getClientId();
-    if (!clientId) return alert('Impossible d’identifier la fiche client Modulr.');
+    if (!clientId) return alert('Impossible d’identifier la fiche client ModulR.');
     const phones = getPhonesOnPage();
     if (!phones.length) return alert('Aucun numéro de téléphone exploitable trouvé sur cette fiche.');
-    const initial = button.textContent; button.disabled = true; button.textContent = '…';
+
+    const collaborator = await collaboratorPicker(phones);
+    if (!collaborator) return;
+
+    const initial = button.textContent;
+    button.disabled = true;
+    button.textContent = '…';
     try {
-      const result = await api(`/api/calls?phones=${encodeURIComponent(phones.join(','))}&hours=48`);
-      const calls = Array.isArray(result.calls) ? result.calls : [];
-      if (!calls.length) return alert('Aucun appel Aircall trouvé sur les 48 dernières heures pour les numéros de cette fiche.');
-      const selected = calls.length === 1 ? calls[0] : await chooseCall(calls);
+      const result = await api(`/api/calls?phones=${encodeURIComponent(phones.join(','))}&hours=${HOURS}`);
+      const allCalls = Array.isArray(result.calls) ? result.calls : [];
+      const wanted = normalizeName(collaborator.aircall);
+      const calls = allCalls.filter(call => normalizeName(call.user?.name) === wanted);
+
+      if (!calls.length) {
+        alert(`Aucun appel Aircall de ${collaborator.modulr} trouvé sur les ${HOURS} dernières heures pour les numéros de cette fiche.`);
+        return;
+      }
+      const selected = calls.length === 1 ? calls[0] : await chooseCall(calls, collaborator);
       if (selected) await previewAndImport(selected);
     } catch (error) {
       alert(`Aircall : ${error.message}`);
     } finally {
-      button.disabled = false; button.textContent = initial;
+      button.disabled = false;
+      button.textContent = initial;
     }
   }
 
   function isVisible(el) {
     if (!el) return false;
-    const r = el.getBoundingClientRect();
-    const s = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
   }
 
   function normalizeText(value) {
@@ -212,64 +368,56 @@
   }
 
   function findEventsTitle() {
-    const nodes = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,strong,label')].filter(isVisible);
-    return nodes.find(el => {
-      const ownText = [...el.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join(' ');
-      const text = normalizeText(ownText || el.textContent);
-      return text === 'evenements' || text.startsWith('evenements ');
-    }) || null;
+    return [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,strong,label')]
+      .filter(isVisible)
+      .find(el => {
+        const own = [...el.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join(' ');
+        const text = normalizeText(own || el.textContent);
+        return text === 'evenements' || text.startsWith('evenements ');
+      }) || null;
   }
 
   function isPlusControl(el) {
     if (!isVisible(el)) return false;
     const text = normalizeText(el.textContent);
     const meta = normalizeText(`${el.id || ''} ${el.className || ''} ${el.title || ''} ${el.getAttribute?.('aria-label') || ''}`);
-    const icon = el.querySelector?.('[class*="plus"], [class*="add"], .fa-plus, .glyphicon-plus');
-    return text === '+' || Boolean(icon) || /(^| )(plus|add|ajout|create|new)( |$)/.test(meta);
+    return text === '+' || Boolean(el.querySelector?.('.fa-plus,.glyphicon-plus,[class*="plus"],[class*="add"]')) || /(^| )(plus|add|ajout|create|new)( |$)/.test(meta);
   }
 
   function findEventsPlus() {
     const title = findEventsTitle();
     const controls = [...document.querySelectorAll('button,a,[role="button"]')].filter(isPlusControl);
     if (!controls.length) return null;
-
-    if (title) {
-      const tr = title.getBoundingClientRect();
-      const scored = controls.map(el => {
+    if (!title) return controls[0];
+    const tr = title.getBoundingClientRect();
+    return controls
+      .map(el => {
         const r = el.getBoundingClientRect();
         const vertical = Math.abs((r.top + r.height / 2) - (tr.top + tr.height / 2));
         const horizontal = Math.abs(r.left - tr.right);
-        const rightBias = r.left >= tr.left ? 0 : 500;
-        return { el, score: vertical * 8 + horizontal + rightBias };
-      }).sort((a, b) => a.score - b.score);
-      if (scored[0]?.score < 1400) return scored[0].el;
-    }
-
-    return controls
-      .filter(el => el.getBoundingClientRect().left > window.innerWidth * 0.45)
-      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0] || null;
+        return { el, score: vertical * 5 + horizontal };
+      })
+      .sort((a, b) => a.score - b.score)[0]?.el || null;
   }
 
   function injectButton() {
     if (document.getElementById(BTN_ID) || !getClientId()) return;
     const plus = findEventsPlus();
     if (!plus?.parentElement) return;
-
     const button = document.createElement('button');
     button.id = BTN_ID;
     button.type = 'button';
     button.title = `Récupérer un appel Aircall · v${VERSION}`;
     button.setAttribute('aria-label', 'Récupérer un appel Aircall');
-    button.innerHTML = '&#9742;';
-    button.style.cssText = 'width:30px;height:30px;margin:0 5px 0 0;padding:0;border:0;border-radius:3px;background:#5f86a1;color:#fff;font-size:17px;font-weight:700;line-height:30px;text-align:center;cursor:pointer;vertical-align:middle;display:inline-block';
-    button.onclick = event => { event.preventDefault(); event.stopPropagation(); run(button); };
+    button.textContent = '☎';
+    button.style.cssText = 'width:36px;height:36px;margin:0 4px;border:0;border-radius:3px;background:#5f86a1;color:#fff;font-size:19px;font-weight:700;line-height:36px;text-align:center;cursor:pointer;vertical-align:middle';
+    button.onclick = () => run(button);
     plus.parentElement.insertBefore(button, plus);
   }
 
-  const observer = new MutationObserver(() => injectButton());
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  new MutationObserver(injectButton).observe(document.documentElement, { childList: true, subtree: true });
   injectButton();
-  setTimeout(injectButton, 500);
-  setTimeout(injectButton, 1500);
-  setTimeout(injectButton, 3000);
+  setTimeout(injectButton, 1000);
+  setTimeout(injectButton, 2500);
+  setTimeout(injectButton, 5000);
 })();
