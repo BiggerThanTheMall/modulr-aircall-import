@@ -117,7 +117,6 @@ export const config: Config = {
     "/api/report/:route",
     "/api/report/:route/:id/:insight"
   ],
-  method: ["GET", "OPTIONS"],
   rateLimit: {
     windowLimit: 120,
     windowSize: 60,
