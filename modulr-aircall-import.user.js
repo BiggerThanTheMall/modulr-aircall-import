@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modulr - Import Aircall
 // @namespace    https://github.com/BiggerThanTheMall
-// @version      0.2.2
+// @version      1.0.0
 // @description  Recherche un appel Aircall depuis la fiche client Modulr puis crée une note normalisée.
 // @match        https://courtage.modulr.fr/*
 // @grant        none
@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.2.2';
+  const VERSION = '1.0.0';
   const API_ROOT = 'https://aircallmodulr.netlify.app';
   const BTN_ID = 'modulr-aircall-import-btn';
   const MODAL_ID = 'modulr-aircall-modal';
@@ -186,7 +186,7 @@
     if (!clientId) return alert('Impossible d’identifier la fiche client Modulr.');
     const phones = getPhonesOnPage();
     if (!phones.length) return alert('Aucun numéro de téléphone exploitable trouvé sur cette fiche.');
-    const initial = button.textContent; button.disabled = true; button.textContent = 'Recherche Aircall...';
+    const initial = button.textContent; button.disabled = true; button.textContent = '…';
     try {
       const result = await api(`/api/calls?phones=${encodeURIComponent(phones.join(','))}&hours=48`);
       const calls = Array.isArray(result.calls) ? result.calls : [];
@@ -200,44 +200,76 @@
     }
   }
 
-  function findEventsToolbar() {
-    const eventTitle = [...document.querySelectorAll('h1,h2,h3,h4,h5,strong,span,div')]
-      .find(el => el.offsetParent !== null && /^Événements$/i.test((el.textContent || '').trim()));
-    if (!eventTitle) return null;
+  function isVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+  }
 
-    let box = eventTitle.parentElement;
-    for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
-      const plus = [...box.querySelectorAll('button,a')].find(el => {
-        const text = (el.textContent || '').trim();
-        return text === '+' || /add|plus|ajout/i.test(`${el.id || ''} ${el.className || ''} ${el.title || ''}`);
-      });
-      if (plus?.parentElement) return plus.parentElement;
+  function normalizeText(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function findEventsTitle() {
+    const nodes = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,strong,label')].filter(isVisible);
+    return nodes.find(el => {
+      const ownText = [...el.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join(' ');
+      const text = normalizeText(ownText || el.textContent);
+      return text === 'evenements' || text.startsWith('evenements ');
+    }) || null;
+  }
+
+  function isPlusControl(el) {
+    if (!isVisible(el)) return false;
+    const text = normalizeText(el.textContent);
+    const meta = normalizeText(`${el.id || ''} ${el.className || ''} ${el.title || ''} ${el.getAttribute?.('aria-label') || ''}`);
+    const icon = el.querySelector?.('[class*="plus"], [class*="add"], .fa-plus, .glyphicon-plus');
+    return text === '+' || Boolean(icon) || /(^| )(plus|add|ajout|create|new)( |$)/.test(meta);
+  }
+
+  function findEventsPlus() {
+    const title = findEventsTitle();
+    const controls = [...document.querySelectorAll('button,a,[role="button"]')].filter(isPlusControl);
+    if (!controls.length) return null;
+
+    if (title) {
+      const tr = title.getBoundingClientRect();
+      const scored = controls.map(el => {
+        const r = el.getBoundingClientRect();
+        const vertical = Math.abs((r.top + r.height / 2) - (tr.top + tr.height / 2));
+        const horizontal = Math.abs(r.left - tr.right);
+        const rightBias = r.left >= tr.left ? 0 : 500;
+        return { el, score: vertical * 8 + horizontal + rightBias };
+      }).sort((a, b) => a.score - b.score);
+      if (scored[0]?.score < 1400) return scored[0].el;
     }
-    return eventTitle.parentElement;
+
+    return controls
+      .filter(el => el.getBoundingClientRect().left > window.innerWidth * 0.45)
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0] || null;
   }
 
   function injectButton() {
     if (document.getElementById(BTN_ID) || !getClientId()) return;
-    const toolbar = findEventsToolbar();
-    if (!toolbar) return;
+    const plus = findEventsPlus();
+    if (!plus?.parentElement) return;
 
     const button = document.createElement('button');
     button.id = BTN_ID;
     button.type = 'button';
     button.title = `Récupérer un appel Aircall · v${VERSION}`;
     button.setAttribute('aria-label', 'Récupérer un appel Aircall');
-    button.textContent = '☎';
-    button.style.cssText = 'width:36px;height:36px;margin:0 4px;border:0;border-radius:3px;background:#5f86a1;color:#fff;font-size:19px;font-weight:700;line-height:36px;text-align:center;cursor:pointer;vertical-align:middle';
-    button.onclick = () => run(button);
-
-    const plus = [...toolbar.querySelectorAll('button,a')].find(el => {
-      const text = (el.textContent || '').trim();
-      return text === '+' || /add|plus|ajout/i.test(`${el.id || ''} ${el.className || ''} ${el.title || ''}`);
-    });
-    if (plus) toolbar.insertBefore(button, plus);
-    else toolbar.appendChild(button);
+    button.innerHTML = '&#9742;';
+    button.style.cssText = 'width:30px;height:30px;margin:0 5px 0 0;padding:0;border:0;border-radius:3px;background:#5f86a1;color:#fff;font-size:17px;font-weight:700;line-height:30px;text-align:center;cursor:pointer;vertical-align:middle;display:inline-block';
+    button.onclick = event => { event.preventDefault(); event.stopPropagation(); run(button); };
+    plus.parentElement.insertBefore(button, plus);
   }
 
-  new MutationObserver(injectButton).observe(document.documentElement, { childList: true, subtree: true });
+  const observer = new MutationObserver(() => injectButton());
+  observer.observe(document.documentElement, { childList: true, subtree: true });
   injectButton();
+  setTimeout(injectButton, 500);
+  setTimeout(injectButton, 1500);
+  setTimeout(injectButton, 3000);
 })();
