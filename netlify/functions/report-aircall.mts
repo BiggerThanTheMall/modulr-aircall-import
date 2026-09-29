@@ -59,6 +59,25 @@ function timestampParam(url: URL, name: string) {
   return Number.isSafeInteger(n) ? n : null;
 }
 
+function compactCall(call: any) {
+  return {
+    id: call?.id ?? null,
+    direction: call?.direction || "",
+    status: call?.status || "",
+    started_at: call?.started_at ?? null,
+    answered_at: call?.answered_at ?? null,
+    ended_at: call?.ended_at ?? null,
+    duration: call?.duration ?? null,
+    raw_digits: call?.raw_digits || "",
+    missed_call_reason: call?.missed_call_reason || null,
+    user: call?.user ? { id: call.user.id, name: call.user.name } : null,
+    number: call?.number ? { id: call.number.id, name: call.number.name, digits: call.number.digits } : null,
+    contact: call?.contact ? { id: call.contact.id, first_name: call.contact.first_name, last_name: call.contact.last_name } : null,
+    voicemail: call?.voicemail || null,
+    tags: Array.isArray(call?.tags) ? call.tags : []
+  };
+}
+
 function safeError(error: any) {
   if (error?.message === "AIRCALL_CONFIG") return json({ error: "Service Aircall indisponible" }, 503);
   if (error?.message === "AIRCALL_UPSTREAM") return json({ error: "Service Aircall indisponible" }, error?.status || 502);
@@ -82,6 +101,35 @@ export default async (req: Request, context: Context) => {
       const perPage = intParam(url, "per_page", 1, 50, 50);
       if (page === null || perPage === null) return json({ error: "Paramètre invalide" }, 400);
       return json(await aircall(`/users?per_page=${perPage}&page=${page}`));
+    }
+
+    if (route === "missed") {
+      const from = timestampParam(url, "from");
+      const to = timestampParam(url, "to");
+      if (from === null || to === null || to < from || to - from > 172800) return json({ error: "Période invalide" }, 400);
+
+      const missed: any[] = [];
+      let page = 1;
+      let next = true;
+
+      while (next && page <= 20) {
+        const data = await aircall(`/calls?from=${from}&per_page=50&page=${page}&order=desc`);
+        const calls = Array.isArray(data.calls) ? data.calls : [];
+
+        for (const call of calls) {
+          const started = Number(call?.started_at || 0);
+          if (started > to) continue;
+          if (call?.direction === "inbound" && call?.missed_call_reason) missed.push(compactCall(call));
+        }
+
+        next = Boolean(data?.meta?.next_page_link) && calls.length > 0;
+        page += 1;
+      }
+
+      const calls = [...new Map(missed.map(call => [String(call.id), call])).values()]
+        .sort((a: any, b: any) => Number(b.started_at || 0) - Number(a.started_at || 0));
+
+      return json({ calls, meta: { scanned_pages: page - 1 } });
     }
 
     if (route === "calls" && !id) {
