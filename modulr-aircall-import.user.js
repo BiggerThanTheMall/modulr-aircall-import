@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Modulr - Import Aircall
 // @namespace    https://github.com/BiggerThanTheMall
-// @version      1.2.1
+// @version      1.2.2
 // @description  Recherche un appel Aircall depuis la fiche client Modulr puis crée un événement d'appel normalisé.
-// @match        https://courtage.modulr.fr/*
+// @match        https://courtage.modulr.fr/fr/scripts/clients*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/BiggerThanTheMall/modulr-aircall-import/main/modulr-aircall-import.user.js
 // @downloadURL  https://raw.githubusercontent.com/BiggerThanTheMall/modulr-aircall-import/main/modulr-aircall-import.user.js
